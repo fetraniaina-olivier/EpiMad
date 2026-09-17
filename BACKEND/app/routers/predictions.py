@@ -6,52 +6,64 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import os
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+if Path("/app/entrainement_modele").exists():
+    PROJECT_ROOT = Path("/app")
+    print(f" DEBUG: Environnement Docker détecté. PROJECT_ROOT = {PROJECT_ROOT}")
+else:
+    
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+    while not (PROJECT_ROOT / "entrainement_modele").exists() and PROJECT_ROOT.parent != PROJECT_ROOT:
+        PROJECT_ROOT = PROJECT_ROOT.parent
+    print(f" DEBUG: Environnement Local détecté. PROJECT_ROOT = {PROJECT_ROOT}")
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from entrainement_modele.preprocessing import prepare_for_xgboost, XGBOOST_FEATURES
-from entrainement_modele.database import get_epidemic_data
+train_script_path = PROJECT_ROOT / "entrainement_modele" / "xgboost" / "train_xgboost.py"
+if not train_script_path.exists():
+    print(f" ATTENTION: Script d'entraînement introuvable à : {train_script_path}")
+    dossier_check = PROJECT_ROOT / "entrainement_modele"
+    if dossier_check.exists():
+        print(f" Contenu du dossier: {list(dossier_check.glob('*'))}")
+    else:
+        print(" Le dossier 'entrainement_modele' n'existe PAS à la racine du projet !")
+
+try:
+    from entrainement_modele.preprocessing import prepare_for_xgboost, XGBOOST_FEATURES
+    from entrainement_modele.database import get_epidemic_data
+    print(" Imports de entrainement_modele réussis.")
+except ImportError as e:
+    print(f" ERREUR CRITIQUE D'IMPORT: {e}")
+    raise
 
 router = APIRouter(prefix="/api", tags=["predictions"])
 
 MODELS_CACHE = {}
 
 def normalize_disease_name(name):
-    """Normalise un nom de maladie pour correspondre au nom du fichier .joblib"""
     name_lower = name.lower()
     name_normalized = unicodedata.normalize('NFKD', name_lower).encode('ASCII', 'ignore').decode('ASCII')
     return name_normalized.replace(" ", "_").replace("-", "_")
 
-
 def get_model_path(disease: str) -> Path:
-    """Retourne le chemin attendu du modèle pour une maladie donnée."""
     models_dir = PROJECT_ROOT / "entrainement_modele" / "xgboost" / "models"
     return models_dir / f"xgboost_{normalize_disease_name(disease)}.joblib"
 
-
 def model_exists(disease: str) -> bool:
-    """Vérifie si le modèle existe sur le disque."""
     return get_model_path(disease).exists()
 
-
 def train_model_for_disease(disease: str) -> bool:
-    """
-    Lance l'entraînement automatique pour une maladie.
-    Retourne True si succès, False sinon.
-    """
-    print(f"\n[ROBOT] XGBoost: Modele manquant pour '{disease}'. Lancement de l'entrainement automatique...")
+    print(f"\n[ROBOT] XGBoost: Modèle manquant pour '{disease}'. Lancement de l'entraînement...")
     
     train_script = PROJECT_ROOT / "entrainement_modele" / "xgboost" / "train_xgboost.py"
     
     if not train_script.exists():
-        print(f"[ERREUR] Script d'entrainement introuvable : {train_script}")
+        print(f"[ERREUR] Script d'entraînement introuvable : {train_script}")
         return False
     
     try:
-        import os
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
         
@@ -66,25 +78,23 @@ def train_model_for_disease(disease: str) -> bool:
         )
         
         if result.returncode == 0:
-            print(f"[SUCCES] Entrainement XGBoost reussi pour '{disease}'")
+            print(f"[SUCCÈS] Entraînement XGBoost réussi pour '{disease}'")
             for line in result.stdout.strip().split('\n')[-5:]:
                 print(f"   {line}")
             return True
         else:
-            print(f"[ERREUR] Echec de l'entrainement pour '{disease}'")
+            print(f"[ERREUR] Échec de l'entraînement pour '{disease}'")
             print(f"   STDERR: {result.stderr[-500:] if result.stderr else 'N/A'}")
             return False
             
     except subprocess.TimeoutExpired:
-        print(f"[TIMEOUT] L'entrainement de '{disease}' a pris trop de temps")
+        print(f"[TIMEOUT] L'entraînement de '{disease}' a pris trop de temps")
         return False
     except Exception as e:
-        print(f"[ERREUR] Erreur lors de l'entrainement de '{disease}': {e}")
+        print(f"[ERREUR] Erreur lors de l'entraînement de '{disease}': {e}")
         return False
 
-
 def get_loaded_models():
-    """Charge les modèles en mémoire s'ils ne le sont pas déjà."""
     global MODELS_CACHE
     if MODELS_CACHE:
         return MODELS_CACHE
@@ -93,7 +103,7 @@ def get_loaded_models():
     models_dir = PROJECT_ROOT / "entrainement_modele" / "xgboost" / "models"
     
     if not models_dir.exists():
-        print(" Dossier models/ introuvable")
+        print(" Dossier models/ introuvable. Aucun modèle chargé.")
         return MODELS_CACHE
     
     for model_file in models_dir.glob("xgboost_*.joblib"):
@@ -118,13 +128,10 @@ def get_loaded_models():
     print(f" {len(MODELS_CACHE)} modèles prêts.\n")
     return MODELS_CACHE
 
-
 def reload_cache():
-    """Force le rechargement du cache (après un nouvel entraînement)."""
     global MODELS_CACHE
     MODELS_CACHE = {}
     return get_loaded_models()
-
 
 def find_disease_in_cache(search_name: str, models: dict) -> str | None:
     search_lower = search_name.lower()
@@ -147,9 +154,7 @@ def find_disease_in_cache(search_name: str, models: dict) -> str | None:
     
     return None
 
-
 def _predict_disease(disease: str, horizon: int, model):
-    """Logique interne de prédiction récursive."""
     df = get_epidemic_data()
     df_disease = df[df["maladie"] == disease].copy()
     if df_disease.empty:
@@ -216,10 +221,8 @@ def _predict_disease(disease: str, horizon: int, model):
     return all_predictions
 
 # ENDPOINTS
-
 @router.get("/predictions/all")
 async def get_all_predictions(horizon: int = 4):
-    """Retourne les prédictions pour toutes les maladies disponibles."""
     if horizon < 1 or horizon > 12:
         raise HTTPException(status_code=400, detail="L'horizon doit être entre 1 et 12 semaines")
     
@@ -237,13 +240,8 @@ async def get_all_predictions(horizon: int = 4):
             
     return {"status": "success", "horizon": horizon, "total_diseases": len(results), "data": results}
 
-
 @router.get("/predictions/{disease}")
 async def get_disease_predictions(disease: str, horizon: int = 4):
-    """
-    Retourne les prédictions pour une maladie spécifique.
-    Si le modèle n'existe pas, il est entraîné automatiquement.
-    """
     if horizon < 1 or horizon > 12:
         raise HTTPException(status_code=400, detail="L'horizon doit être entre 1 et 12 semaines")
     
@@ -252,53 +250,38 @@ async def get_disease_predictions(disease: str, horizon: int = 4):
     elif "hepatite" in disease.lower(): search_disease = "Hépatite virale"
     
     models = get_loaded_models()
-    
     disease_name = find_disease_in_cache(search_disease, models)
     
     if disease_name is None:
-        print(f"\n Modèle '{search_disease}' non trouvé dans le cache.")
-        print(f"[] Tentative d'entraînement automatique...")
-        
+        print(f"\n Modèle '{search_disease}' non trouvé. Tentative d'entraînement...")
         success = train_model_for_disease(search_disease)
         
         if not success:
             raise HTTPException(
                 status_code=404, 
-                detail=f"Modèle non trouvé pour '{search_disease}' et l'entraînement automatique a échoué. "
-                       f"Vérifiez que des données existent en base pour cette maladie (min. 10 semaines)."
+                detail=f"Modèle non trouvé pour '{search_disease}' et l'entraînement a échoué."
             )
         
-        # Recharge le cache avec le nouveau modèle
-        print(f"Rechargement du cache après entraînement...")
         models = reload_cache()
         disease_name = find_disease_in_cache(search_disease, models)
         
         if disease_name is None:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Entraînement terminé mais modèle introuvable dans le cache pour '{search_disease}'."
-            )
-        
-        print(f" Modèle '{disease_name}' maintenant disponible !")
+            raise HTTPException(status_code=500, detail=f"Entraînement terminé mais modèle introuvable.")
     
-    # 3. Fait la prédiction
     try:
         predictions = _predict_disease(disease_name, horizon, models[disease_name]["model"])
         return {
             "status": "success",
             "disease": disease_name,
             "horizon": horizon,
-            "auto_trained": disease_name not in [d for d in get_loaded_models().keys() if d != disease_name],
             "total_predictions": len(predictions),
             "data": predictions
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la prédiction: {str(e)}")
 
-
 @router.get("/models")
 async def get_available_models():
-    """Retourne la liste des modèles XGBoost chargés."""
     models = get_loaded_models()
     return {
         "status": "success",
@@ -306,15 +289,9 @@ async def get_available_models():
         "data": {d: {"model_file": i["path"], "loaded_at": i["loaded_at"]} for d, i in models.items()}
     }
 
-
 @router.post("/train/{disease}")
 async def trigger_training(disease: str):
-    """
-    Endpoint manuel pour forcer l'entraînement d'un modèle.
-    Utile après un gros import de données.
-    """
     print(f"\n Demande d'entraînement manuel pour '{disease}'")
-    
     success = train_model_for_disease(disease)
     
     if success:
@@ -325,7 +302,4 @@ async def trigger_training(disease: str):
             "model_path": str(get_model_path(disease))
         }
     else:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Échec de l'entraînement pour '{disease}'. Vérifiez les logs du backend."
-        )
+        raise HTTPException(status_code=500, detail=f"Échec de l'entraînement pour '{disease}'.")

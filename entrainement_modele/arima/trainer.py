@@ -4,15 +4,17 @@ import warnings
 import pandas as pd
 import numpy as np
 import pmdarima as pm # type: ignore
+import matplotlib # type: ignore
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt # type: ignore
 import joblib
 
+from sqlalchemy import text
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import engine
 
 warnings.filterwarnings('ignore')
 
-# Configuration des chemins de sauvegarde et de dossier
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
 RESULTS_DIR = os.path.join(BASE_DIR, 'results')
@@ -23,9 +25,12 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 def get_all_couples():
     """Récupère la liste de tous les couples (region_id, maladie_id) présents dans la BDD."""
-    query = "SELECT DISTINCT region_id, maladie_id FROM cas_epidemiques ORDER BY region_id, maladie_id;"
+    query = text("SELECT DISTINCT region_id, maladie_id FROM cas_epidemiques ORDER BY region_id, maladie_id;")
     try:
-        df = pd.read_sql(query, con=engine)
+       
+        with engine.connect() as conn:
+            result = conn.execute(query)
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
         print(f" Trouvé {len(df)} couples (Région, Maladie) avec des données dans la BDD.")
         return df
     except Exception as e:
@@ -35,13 +40,16 @@ def get_all_couples():
 
 def charger_et_preparer_serie(region_id: int, maladie_id: int) -> pd.Series:
     """Charge les données pour un couple et prépare la série temporelle (preprocessing ARIMA)."""
-    query = f"""
+    query = text("""
         SELECT date_observation, cas_nouveaux 
         FROM cas_epidemiques 
-        WHERE region_id = {region_id} AND maladie_id = {maladie_id}
+        WHERE region_id = :region_id AND maladie_id = :maladie_id
         ORDER BY date_observation ASC;
-    """
-    df = pd.read_sql(query, con=engine)
+    """)
+   
+    with engine.connect() as conn:
+        result = conn.execute(query, {"region_id": region_id, "maladie_id": maladie_id})
+        df = pd.DataFrame(result.fetchall(), columns=result.keys())
     
     if df.empty:
         return None
@@ -60,7 +68,6 @@ def entrainer_modele(region_id: int, maladie_id: int, horizon: int = 4):
     
     serie = charger_et_preparer_serie(region_id, maladie_id)
     
-
     if serie is None or len(serie) < 10:
         print(f" Pas assez de données (moins de 10 semaines). Modèle ignoré.")
         return
@@ -90,14 +97,14 @@ def entrainer_modele(region_id: int, maladie_id: int, horizon: int = 4):
         'intervalle_confiance_max': intervalles[:, 1]
     })
     
-    #  SAUVEGARDES
-    
+    # SAUVEGARDES
     nom_modele = f"arima_r{region_id}_m{maladie_id}.pkl"
     joblib.dump(modele, os.path.join(MODELS_DIR, nom_modele))
     
     nom_csv = f"previsions_r{region_id}_m{maladie_id}.csv"
     df_previsions.to_csv(os.path.join(RESULTS_DIR, nom_csv), index=False)
     
+    # Génération du graphique
     plt.figure(figsize=(10, 5))
     plt.plot(serie.index, serie.values, label='Historique', color='blue', alpha=0.6)
     plt.plot(df_previsions['date_previson'], df_previsions['cas_prevus'], label='Prévision ARIMA', color='red', marker='o')

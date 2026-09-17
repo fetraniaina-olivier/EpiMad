@@ -2,24 +2,23 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# dépendances système
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copie requirements.txt depuis la racine du projet
+# dépendances Python
 COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Copie le contenu du dossier BACKEND dans /app
+# Copier le code source
 COPY BACKEND/ /app/
-
-# Copie les modules Python custom situés à la racine du projet
 COPY entrainement_modele/ /app/entrainement_modele/
 COPY ETL/ /app/ETL/
 
-# Permet les imports "nus" comme `from database import ...`
-# en plus des imports qualifiés comme `from entrainement_modele.database import ...`
+# Configuration des imports
 ENV PYTHONPATH="/app/app:/app:${PYTHONPATH}"
 
 EXPOSE 8000

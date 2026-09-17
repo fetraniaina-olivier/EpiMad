@@ -37,9 +37,9 @@ class PredictionService:
                     "path": model_file,
                     "loaded_at": pd.Timestamp.now().isoformat()
                 }
-                print(f"  ✓ {disease_name} chargé depuis {model_file.name}")
+                print(f"   {disease_name} chargé depuis {model_file.name}")
             except Exception as e:
-                print(f"  ✗ Erreur chargement {model_file.name}: {e}")
+                print(f"   Erreur chargement {model_file.name}: {e}")
         
         print(f" {len(self.models)} modèles chargés avec succès.\n")
     

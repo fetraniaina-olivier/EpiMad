@@ -1,26 +1,32 @@
-// FRONTEND/src/services/xgboostService.js
+const API_URL = "http://127.0.0.1:8000/api";
 
-const API_BASE_URL = "http://127.0.0.1:8000/api";
+export const getPrevisionsXGBoost = async (maladieNom, horizon) => {
+  const token = localStorage.getItem("token");
+  
+  const encodedMaladie = encodeURIComponent(maladieNom);
+  const url = `${API_URL}/predictions/${encodedMaladie}?horizon=${horizon}`;
 
-export const getPrevisionsXGBoost = async (nomMaladie, horizon = 4) => {
+  console.log(" Appel prévisions XGBoost vers :", url);
+
   try {
-    const formattedDisease = encodeURIComponent(nomMaladie);
-    
-    const response = await fetch(
-      `${API_BASE_URL}/predictions/${formattedDisease}?horizon=${horizon}`
-    );
-    
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    });
+
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Erreur lors de la récupération des prévisions XGBoost");
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Erreur HTTP: ${response.status}`);
     }
-    
+
     const data = await response.json();
-    
-    return data.data; 
+    return data.data || [];
     
   } catch (error) {
-    console.error(" Erreur API XGBoost :", error);
+    console.error(" Erreur récupération prévisions XGBoost:", error);
     throw error;
   }
 };

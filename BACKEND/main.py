@@ -2,9 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import import_etl
 from app.routers import cas, maladies, regions, stats, predictions, historique, alertes, comparatif, import_data
-from app.routers.arima_predictions import router as arima_predictions_router
 from app.routers import auth
 from app.routers import historique_donnees
+from app.routers import arima_predictions
 from app.routers import dashboard_stats
 
 app = FastAPI(
@@ -28,7 +28,7 @@ app.include_router(stats.router)
 app.include_router(predictions.router)
 app.include_router(historique.router)
 app.include_router(alertes.router)
-app.include_router(arima_predictions_router)
+app.include_router(arima_predictions.router)
 app.include_router(comparatif.router)
 app.include_router(import_data.router)
 app.include_router(auth.router)

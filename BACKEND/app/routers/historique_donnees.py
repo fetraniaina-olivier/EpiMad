@@ -1,178 +1,221 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
-from datetime import datetime, timedelta
-from typing import List, Dict, Any
-
-from app.database import get_db
-from app.models import CasEpidemique, Maladie, Region, User
-from app.routers.auth import get_current_user
-
-router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
-
-# Année cible : 2026
-YEAR_2026_START = datetime(2026, 1, 1)
-YEAR_2026_END = datetime(2026, 12, 31, 23, 59, 59)
+import sys
+import os
+import logging
+from datetime import date
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import text
 
 
-@router.get("/kpi")
-def get_kpi_stats(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+epimad_dir = os.path.dirname(backend_dir)
+entrainement_dir = os.path.join(epimad_dir, 'entrainement_modele')
+
+print(f" DEBUG: Chemin vers entrainement_modele: {entrainement_dir}")
+
+
+if entrainement_dir not in sys.path:
+    sys.path.insert(0, entrainement_dir)
+
+
+try:
+    from database import engine
+    print(" DEBUG: Import de database.py depuis entrainement_modele réussi !")
+except Exception as e:
+    print(f" DEBUG: Échec de l'import: {e}")
+    raise
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/historique-donnees", tags=["Historique"])
+
+
+@router.get("/maladies")
+def get_liste_maladies():
+    """Retourne la liste des maladies disponibles, pour peupler les filtres du frontend."""
+    query = text("""
+        SELECT id, nom_officiel
+        FROM maladies
+        ORDER BY nom_officiel ASC;
+    """)
+
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(query)
+            rows = result.fetchall()
+
+            return [
+                {"id": row.id, "nom": row.nom_officiel}
+                for row in rows
+            ]
+
+    except Exception as e:
+        logger.error(f"Erreur SQL dans get_liste_maladies: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur serveur: {str(e)}")
+
+
+@router.get("/regions")
+def get_liste_regions():
+    """Retourne la liste des régions disponibles, pour peupler les filtres du frontend."""
+    query = text("""
+        SELECT id, nom_region
+        FROM regions
+        ORDER BY nom_region ASC;
+    """)
+
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(query)
+            rows = result.fetchall()
+
+            return [
+                {"id": row.id, "nom": row.nom_region}
+                for row in rows
+            ]
+
+    except Exception as e:
+        logger.error(f"Erreur SQL dans get_liste_regions: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur serveur: {str(e)}")
+
+
+@router.get("")
+@router.get("/")
+def get_historique_par_filtres(
+    maladie_id: int = Query(...),
+    region_id: int = Query(...),
+    date_debut: Optional[date] = Query(default=None),
+    date_fin: Optional[date] = Query(default=None),
 ):
-    """Récupère les KPI principaux pour 2026 uniquement."""
-    
-    total_cas = db.query(func.sum(CasEpidemique.cas_nouveaux)).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END
-    ).scalar() or 0
-    
-    total_deces = db.query(func.sum(CasEpidemique.deces)).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END
-    ).scalar() or 0
-    
-    total_gueris = db.query(func.sum(CasEpidemique.gueris)).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END
-    ).scalar() or 0
-    
-    total_regions = db.query(func.count(Region.id)).scalar() or 0
-    
-    regions_alerte = db.query(
-        func.count(func.distinct(CasEpidemique.region_id))
-    ).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END,
-        CasEpidemique.cas_nouveaux > 500
-    ).scalar() or 0
-    
-    taux_letalite = (total_deces / total_cas * 100) if total_cas > 0 else 0
-    taux_guerison = (total_gueris / total_cas * 100) if total_cas > 0 else 0
-    
-    return {
-        "total_cas": int(total_cas),
-        "total_deces": int(total_deces),
-        "total_gueris": int(total_gueris),
-        "total_regions": int(total_regions),
-        "regions_alerte": int(regions_alerte),
-        "taux_letalite": round(taux_letalite, 2),
-        "taux_guerison": round(taux_guerison, 2)
-    }
+    """
+    Retourne l'historique filtré par maladie, région, et une plage de dates optionnelle.
+    Utilisé par le frontend via des query params, ex:
+    /api/historique-donnees/?maladie_id=5&region_id=1&date_debut=2023-02-12&date_fin=2023-04-13
+    """
+    conditions = ["region_id = :region_id", "maladie_id = :maladie_id"]
+    params = {"region_id": region_id, "maladie_id": maladie_id}
+
+    if date_debut:
+        conditions.append("date_observation >= :date_debut")
+        params["date_debut"] = date_debut
+
+    if date_fin:
+        conditions.append("date_observation <= :date_fin")
+        params["date_fin"] = date_fin
+
+    where_clause = " AND ".join(conditions)
+
+    query = text(f"""
+        SELECT 
+            date_observation,
+            cas_nouveaux,
+            cas_cumules,
+            deces,
+            gueris,
+            taux_incidence
+        FROM cas_epidemiques
+        WHERE {where_clause}
+        ORDER BY date_observation ASC;
+    """)
+
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(query, params)
+            rows = result.fetchall()
+
+            if not rows:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Aucune donnée trouvée pour region_id={region_id}, maladie_id={maladie_id}"
+                )
+
+            historique = []
+            for row in rows:
+                historique.append({
+                    "date": row.date_observation.strftime("%Y-%m-%d"),
+                    "semaine": f"Sem. {row.date_observation.strftime('%Y-W%V')}",
+                    "cas_nouveaux": int(row.cas_nouveaux) if row.cas_nouveaux else 0,
+                    "cas_cumules": int(row.cas_cumules) if row.cas_cumules else 0,
+                    "deces": int(row.deces) if row.deces else 0,
+                    "gueris": int(row.gueris) if row.gueris else 0,
+                    "taux_incidence": float(row.taux_incidence) if row.taux_incidence else 0.0
+                })
+
+            return {
+                "region_id": region_id,
+                "maladie_id": maladie_id,
+                "semaines_disponibles": len(historique),
+                "data": historique
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur SQL dans get_historique_par_filtres: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur serveur: {str(e)}")
 
 
-@router.get("/evolution-cas")
-def get_evolution_cas(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+@router.get("/{region_id}/{maladie_id}")
+def get_historique_epidemique(
+    region_id: int,
+    maladie_id: int,
+    semaines: int = Query(default=52, ge=1, le=365)
 ):
-    """Évolution mensuelle des cas pour 2026 uniquement."""
-    
-    results = db.query(
-        func.date_trunc('month', CasEpidemique.date_observation).label('mois'),
-        func.sum(CasEpidemique.cas_nouveaux).label('total_cas'),
-        func.sum(CasEpidemique.deces).label('total_deces')
-    ).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END
-    ).group_by(
-        func.date_trunc('month', CasEpidemique.date_observation)
-    ).order_by(
-        func.date_trunc('month', CasEpidemique.date_observation)
-    ).all()
-    
-    return [
-        {
-            "mois": row.mois.strftime("%Y-%m"),
-            "cas": int(row.total_cas),
-            "deces": int(row.total_deces)
-        } for row in results
-    ]
+    query = text("""
+        SELECT 
+            date_observation,
+            cas_nouveaux,
+            cas_cumules,
+            deces,
+            gueris,
+            taux_incidence
+        FROM cas_epidemiques
+        WHERE region_id = :region_id 
+          AND maladie_id = :maladie_id
+        ORDER BY date_observation DESC
+        LIMIT :limit_val;
+    """)
 
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(
+                query,
+                {
+                    "region_id": region_id,
+                    "maladie_id": maladie_id,
+                    "limit_val": semaines
+                }
+            )
 
-@router.get("/repartition-maladies")
-def get_repartition_maladies(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Répartition des cas par maladie pour 2026 uniquement."""
-    
-    results = db.query(
-        Maladie.nom_officiel,
-        func.sum(CasEpidemique.cas_nouveaux).label('total')
-    ).join(
-        CasEpidemique, CasEpidemique.maladie_id == Maladie.id
-    ).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END
-    ).group_by(
-        Maladie.nom_officiel
-    ).order_by(
-        desc('total')
-    ).all()
-    
-    return [
-        {"name": r.nom_officiel, "value": int(r.total)} for r in results
-    ]
+            rows = result.fetchall()
 
+            if not rows:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Aucune donnée trouvée pour region_id={region_id}, maladie_id={maladie_id}"
+                )
 
-@router.get("/top-regions")
-def get_top_regions(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Top 10 régions avec le plus de cas pour 2026 uniquement."""
-    
-    results = db.query(
-        Region.nom_region,
-        func.sum(CasEpidemique.cas_nouveaux).label('total_cas'),
-        func.sum(CasEpidemique.deces).label('total_deces')
-    ).join(
-        CasEpidemique, CasEpidemique.region_id == Region.id
-    ).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END
-    ).group_by(
-        Region.nom_region
-    ).order_by(
-        desc('total_cas')
-    ).limit(10).all()
-    
-    return [
-        {
-            "region": r.nom_region,
-            "cas": int(r.total_cas),
-            "deces": int(r.total_deces)
-        } for r in results
-    ]
+            historique = []
+            for row in rows:
+                historique.append({
+                    "date": row.date_observation.strftime("%Y-%m-%d"),
+                    "semaine": f"Sem. {row.date_observation.strftime('%Y-W%V')}",
+                    "cas_nouveaux": int(row.cas_nouveaux) if row.cas_nouveaux else 0,
+                    "cas_cumules": int(row.cas_cumules) if row.cas_cumules else 0,
+                    "deces": int(row.deces) if row.deces else 0,
+                    "gueris": int(row.gueris) if row.gueris else 0,
+                    "taux_incidence": float(row.taux_incidence) if row.taux_incidence else 0.0
+                })
+            historique.reverse()
 
+            return {
+                "region_id": region_id,
+                "maladie_id": maladie_id,
+                "semaines_disponibles": len(historique),
+                "data": historique
+            }
 
-@router.get("/comparatif-regions")
-def get_comparatif_regions(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Comparatif décès vs guérisons par région pour 2026 uniquement."""
-    
-    results = db.query(
-        Region.nom_region,
-        func.sum(CasEpidemique.deces).label('deces'),
-        func.sum(CasEpidemique.gueris).label('gueris')
-    ).join(
-        CasEpidemique, CasEpidemique.region_id == Region.id
-    ).filter(
-        CasEpidemique.date_observation >= YEAR_2026_START,
-        CasEpidemique.date_observation <= YEAR_2026_END
-    ).group_by(
-        Region.nom_region
-    ).order_by(
-        desc('deces')
-    ).limit(8).all()
-    
-    return [
-        {
-            "region": r.nom_region,
-            "deces": int(r.deces),
-            "gueris": int(r.gueris)
-        } for r in results
-    ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f" ERREUR SQL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur serveur: {str(e)}")

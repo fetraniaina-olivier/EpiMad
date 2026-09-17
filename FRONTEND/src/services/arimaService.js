@@ -1,60 +1,69 @@
-const API_BASE_URL = "http://127.0.0.1:8000/api";
+const API_URL = "http://127.0.0.1:8000/api";
 
-export const getPrevisionsARIMA = async (regionId, maladieId, horizon = 4) => {
+
+export const getHistorique = async (regionId, maladieId, semaines = 52) => {
+  const token = localStorage.getItem("token");
+
+  const dateFin = new Date();
+  const dateDebut = new Date();
+  dateDebut.setDate(dateDebut.getDate() - (semaines * 7));
+
+  const formatDate = (d) => d.toISOString().split("T")[0];
+
+
+  const url = `${API_URL}/historique-donnees/?maladie_id=${maladieId}&region_id=${regionId}&date_debut=${formatDate(dateDebut)}&date_fin=${formatDate(dateFin)}`;
+  
+  console.log(" Appel historique vers :", url);
+
   try {
-    const response = await fetch(
-      `${API_BASE_URL}/arima/previsions/${regionId}/${maladieId}?horizon=${horizon}`
-    );
-    
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    });
+
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Erreur lors de la récupération des prévisions");
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Erreur HTTP: ${response.status}`);
     }
-    
+
     const data = await response.json();
-    return data.data;
+   
+    return data.data || [];
+    
   } catch (error) {
-    console.error("Erreur API ARIMA :", error);
+    console.error(" Erreur récupération historique:", error);
     throw error;
   }
 };
 
-export const getHistorique = async (regionId, maladieId, semaines = 12) => {
+
+export const getPrevisionsARIMA = async (regionId, maladieId, horizon) => {
+  const token = localStorage.getItem("token");
+ 
+  const url = `${API_URL}/previsions/arima?region_id=${regionId}&maladie_id=${maladieId}&horizon=${horizon}`;
+
   try {
-    const response = await fetch(
-      `${API_BASE_URL}/historique/${regionId}/${maladieId}?semaines=${semaines}`
-    );
-    
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    });
+
     if (!response.ok) {
-      throw new Error("Erreur récupération historique");
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Erreur HTTP: ${response.status}`);
     }
-    
+
     const data = await response.json();
-    return data.data;
+    return data.data || [];
+    
   } catch (error) {
-    console.error("Erreur historique:", error);
-    return [];
-  }
-};
-
-export const getRegions = async () => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/regions`);
-    if (!response.ok) throw new Error("Erreur régions");
-    return await response.json();
-  } catch (error) {
-    console.error("Erreur régions:", error);
-    return [];
-  }
-};
-
-export const getMaladies = async () => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/maladies`);
-    if (!response.ok) throw new Error("Erreur maladies");
-    return await response.json();
-  } catch (error) {
-    console.error("Erreur maladies:", error);
-    return [];
+    console.error(" Erreur récupération prévisions ARIMA:", error);
+    throw error;
   }
 };

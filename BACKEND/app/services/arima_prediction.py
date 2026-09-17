@@ -2,17 +2,28 @@ import pandas as pd
 import joblib
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent.parent.parent.parent
+if Path("/app/entrainement_modele").exists(): 
+    BASE_DIR = Path("/app")
+else:
+    
+    BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
+
 MODELS_DIR = BASE_DIR / "entrainement_modele" / "arima" / "models"
+
+print(f"ARIMA - Chemin des modèles : {MODELS_DIR}")
 
 def charger_et_predire(region_id: int, maladie_id: int, horizon: int = 4):
     """Charge le modèle ARIMA et génère les prévisions."""
     nom_fichier = f"arima_r{region_id}_m{maladie_id}.pkl"
     chemin_modele = MODELS_DIR / nom_fichier
-    
+    print(f"Recherche du modèle : {chemin_modele}")
     if not chemin_modele.exists():
-        raise FileNotFoundError(f"Aucun modèle trouvé pour la Région {region_id} et la Maladie {maladie_id} dans {MODELS_DIR}.")
+        raise FileNotFoundError(
+            f"Aucun modèle trouvé pour la Région {region_id} et la Maladie {maladie_id} "
+            f"dans {MODELS_DIR}."
+        )
     
+    print(f" Modèle trouvé, chargement en cours...")
     modele = joblib.load(chemin_modele)
     
     # Générer les prévisions et créer la feature
@@ -22,16 +33,13 @@ def charger_et_predire(region_id: int, maladie_id: int, horizon: int = 4):
     
     resultats = []
     
-    liste_previsions = previsions.tolist()
-    liste_min = intervalles[:, 0].tolist()
-    liste_max = intervalles[:, 1].tolist()
-    
     for i in range(horizon):
         resultats.append({
             "date": dates_futures[i].strftime("%Y-%m-%d"),
-            "cas_prevus": int(round(previsions[i])),
-            "min_confiance": int(round(max(0, intervalles[i][0]))), # max(0) pour éviter les négatifs
-            "max_confiance": int(round(max(0, intervalles[i][1])))
+            "cas_prevus": int(round(float(previsions.iloc[i]))),
+            "min_confiance": int(round(max(0, float(intervalles[i][0])))),
+            "max_confiance": int(round(max(0, float(intervalles[i][1]))))
         })
         
+    print(f" {len(resultats)} prévisions ARIMA générées avec succès !")
     return resultats

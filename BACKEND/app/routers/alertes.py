@@ -1,17 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
-import sys
-import os
+from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
-
-try:
-    from entrainement_modele.database import engine
-except ImportError:
-    from database import engine
+from app.database import get_db
 
 router = APIRouter(prefix="/api/alertes", tags=["Alertes"])
 
@@ -26,14 +17,14 @@ SEUILS_ALERTES = {
 }
 
 @router.get("/")
-def get_alertes_ia_predictives(horizon: int = 4):
+def get_alertes_ia_predictives(horizon: int = 4, db: Session = Depends(get_db)):
     """
     Génère des ALERTES FUTURES en projetant la tendance.
     horizon: nombre de semaines à prédire (1, 2, 4, 8)
     """
     alertes = []
     
-    # Récupèrer l'historique des 4 dernières semaines
+    # Récupérer l'historique des 4 dernières semaines
     query = text("""
         SELECT 
             c.region_id, 
@@ -54,77 +45,75 @@ def get_alertes_ia_predictives(horizon: int = 4):
     """)
 
     try:
-        with engine.connect() as conn:
-            result = conn.execute(query)
-            rows = result.fetchall()
+       
+        result = db.execute(query)
+        rows = result.fetchall()
+        
+        groupes = {}
+        for row in rows:
+            key = (row[0], row[2])
+            if key not in groupes:
+                groupes[key] = {
+                    "region_nom": row[1],
+                    "maladie_nom": row[3],
+                    "dates": [],
+                    "cas": []
+                }
+            groupes[key]["dates"].append(row[4])
+            groupes[key]["cas"].append(row[5])
+
+        for (region_id, maladie_id), data in groupes.items():
+            if len(data["cas"]) < 2:
+                continue
             
-            groupes = {}
-            for row in rows:
-                key = (row[0], row[2])
-                if key not in groupes:
-                    groupes[key] = {
-                        "region_nom": row[1],
-                        "maladie_nom": row[3],
-                        "dates": [],
-                        "cas": []
-                    }
-                groupes[key]["dates"].append(row[4])
-                groupes[key]["cas"].append(row[5])
+            cas_actuels = data["cas"]
+            maladie_nom = data["maladie_nom"]
+            region_nom = data["region_nom"]
+            seuil = SEUILS_ALERTES.get(maladie_nom, 500)
+            
+            variation_moyenne = (cas_actuels[-1] - cas_actuels[0]) / (len(cas_actuels) - 1)
+            
+            cas_prevus = int(cas_actuels[-1] + variation_moyenne * horizon)
+            cas_prevus_j7 = int(cas_actuels[-1] + variation_moyenne)
+            cas_prevus_j14 = int(cas_actuels[-1] + (variation_moyenne * horizon))
+            
+            date_alerte_future = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
 
-            for (region_id, maladie_id), data in groupes.items():
-                if len(data["cas"]) < 2:
-                    continue
-                
-                cas_actuels = data["cas"]
-                maladie_nom = data["maladie_nom"]
-                region_nom = data["region_nom"]
-                seuil = SEUILS_ALERTES.get(maladie_nom, 500)
-                
-                
-                variation_moyenne = (cas_actuels[-1] - cas_actuels[0]) / (len(cas_actuels) - 1)
-                
-                cas_prevus = int(cas_actuels[-1] + variation_moyenne * horizon)
-                cas_prevus_j7 = int(cas_actuels[-1] + variation_moyenne)
-                cas_prevus_j14 = int(cas_actuels[-1] + (variation_moyenne * horizon))
-                
-                date_alerte_future = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
+            if cas_prevus_j14 > seuil:
+                alertes.append({
+                    "id": f"alert_future_{region_id}_{maladie_id}",
+                    "type": "PREDICTION_IA",
+                    "priorite": "CRITIQUE",
+                    "icone": "🚨",
+                    "titre": f"Risque de dépassement dans {horizon} semaines",
+                    "description": f"Selon la tendance actuelle, {maladie_nom} à {region_nom} devrait atteindre ~{cas_prevus} cas dans {horizon} semaines (Seuil: {seuil}).",
+                    "region": region_nom,
+                    "maladie": maladie_nom,
+                    "valeur_actuelle": cas_actuels[-1],
+                    "valeur_prevue": cas_prevus_j14,
+                    "seuil": seuil,
+                    "horizon": horizon,
+                    "date": date_alerte_future,
+                    "statut": "NOUVELLE"
+                })
+            elif cas_prevus_j7 > seuil * 0.85:
+                alertes.append({
+                    "id": f"alert_warning_{region_id}_{maladie_id}",
+                    "type": "PREDICTION_IA",
+                    "priorite": "ELEVEE",
+                    "icone": "⚠️",
+                    "titre": f"Augmentation critique détectée",
+                    "description": f"La tendance de {maladie_nom} à {region_nom} est en forte hausse. Surveillance renforcée recommandée.",
+                    "region": region_nom,
+                    "maladie": maladie_nom,
+                    "valeur_actuelle": cas_actuels[-1],
+                    "valeur_prevue": cas_prevus_j7,
+                    "seuil": seuil,
+                    "horizon": horizon,
+                    "date": (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"),
+                    "statut": "NOUVELLE"
+                })
 
-                if cas_prevus_j14 > seuil:
-                    alertes.append({
-                        "id": f"alert_future_{region_id}_{maladie_id}",
-                        "type": "PREDICTION_IA",
-                        "priorite": "CRITIQUE",
-                        "icone": "",
-                        "titre": f"Risque de dépassement dans {horizon} semaines",
-                        "description": f"Selon la tendance actuelle, {maladie_nom} à {region_nom} devrait atteindre ~{cas_prevus} cas dans {horizon} semaines (Seuil: {seuil}).",
-                        "region": region_nom,
-                        "maladie": maladie_nom,
-                        "valeur_actuelle": cas_actuels[-1],
-                        "valeur_prevue": cas_prevus_j14,
-                        "seuil": seuil,
-                        "horizon": horizon,
-                        "date": date_alerte_future,
-                        "statut": "NOUVELLE"
-                    })
-                elif cas_prevus_j7 > seuil * 0.85:
-                    alertes.append({
-                        "id": f"alert_warning_{region_id}_{maladie_id}",
-                        "type": "PREDICTION_IA",
-                        "priorite": "ELEVEE",
-                        "icone": "⚠️",
-                        "titre": f"Augmentation critique détectée",
-                        "description": f"La tendance de {maladie_nom} à {region_nom} est en forte hausse. Surveillance renforcée recommandée.",
-                        "region": region_nom,
-                        "maladie": maladie_nom,
-                        "valeur_actuelle": cas_actuels[-1],
-                        "valeur_prevue": cas_prevus_j7,
-                        "seuil": seuil,
-                        "horizon": horizon,
-                        "date": (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"),
-                        "statut": "NOUVELLE"
-                    })
-
-     
         ordre_priorite = {"CRITIQUE": 0, "ELEVEE": 1, "MODEREE": 2, "FAIBLE": 3}
         alertes.sort(key=lambda x: ordre_priorite.get(x["priorite"], 99))
 

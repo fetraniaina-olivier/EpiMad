@@ -1,5 +1,6 @@
 """
 Connexion à PostgreSQL et extraction des données EpiMad.
+Compatible SQLAlchemy 2.0, Pandas 2.0+ et Docker.
 """
 
 import os
@@ -7,20 +8,21 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# Charger les variables du fichier .env
+# variables du fichier .env
 load_dotenv()
 
-POSTGRES_USER = os.getenv("POSTGRES_USER")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-POSTGRES_DB = os.getenv("POSTGRES_DB")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "epimad_user")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "epimad_secret_password_2026")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "epimad_db")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 
-# Depuis Windows, PostgreSQL Docker est accessible via localhost
 DATABASE_URL = (
     f"postgresql+psycopg2://{POSTGRES_USER}:"
-    f"{POSTGRES_PASSWORD}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}"
+    f"{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 )
 
+print(f" Connexion à : {POSTGRES_HOST}:{POSTGRES_PORT}")
 engine = create_engine(DATABASE_URL)
 
 
@@ -30,7 +32,7 @@ def test_connection():
         with engine.connect() as connection:
             result = connection.execute(text("SELECT 1"))
             print("✓ Connexion PostgreSQL réussie.")
-            print(f" Resultat du test : {result.scalar()}")
+            print(f" Résultat du test : {result.scalar()}")
     except Exception as error:
         print("✗ Échec de la connexion PostgreSQL.")
         print(f"Erreur : {error}")
@@ -38,7 +40,7 @@ def test_connection():
 
 def get_epidemic_data():
     """Récupère les données épidémiques avec le nom de la maladie."""
-    query = """
+    query = text("""
         SELECT
             c.id,
             c.date_observation,
@@ -59,24 +61,29 @@ def get_epidemic_data():
         INNER JOIN maladies m
             ON c.maladie_id = m.id
         ORDER BY c.maladie_id, c.region_id, c.date_observation;
-    """
+    """)
 
     try:
-        df = pd.read_sql(query, engine)
-        print(f" Données récupérées : {len(df):,} observations")
-        return df
+       
+        with engine.connect() as conn:
+            result = conn.execute(query)
+           
+            columns = result.keys()
+            
+            rows = result.fetchall()
+            
+            df = pd.DataFrame(rows, columns=columns)
+            print(f" Données récupérées : {len(df):,} observations")
+            return df
     except Exception as error:
         print("✗ Erreur lors de l'extraction des données.")
         print(f"Erreur : {error}")
         return pd.DataFrame()
 
-# ==============================================================================
-# INSPECTER LA VÉRITÉ DE LA BASE DE DONNÉES
-# ==============================================================================
 
 def inspect_db_truth():
     """Vérifie la vérité brute dans la base de données, semaine par semaine."""
-    query = """
+    query = text("""
         SELECT 
             EXTRACT(YEAR FROM c.date_observation) as annee,
             EXTRACT(WEEK FROM c.date_observation) as semaine,
@@ -91,30 +98,32 @@ def inspect_db_truth():
             EXTRACT(WEEK FROM c.date_observation)
         ORDER BY annee DESC, semaine DESC
         LIMIT 30;
-    """
+    """)
     try:
-        df = pd.read_sql(query, engine)
-        print("\n" + "="*80)
-        print(" VÉRITÉ BRUTE DE LA BASE DE DONNÉES (PALUDISME)")
-        print("="*80)
-        print(df.to_string(index=False))
-        print("="*80)
-        
-        # Analyse spécifique de 2026
-        df_2026 = df[df['annee'] == 2026]
-        if not df_2026.empty:
-            print(f"\n ANALYSE 2026 : {len(df_2026)} semaines trouvées.")
-            print(f"   ➔ Maximum de cas en une semaine en 2026 : {df_2026['total_cas_nouveaux'].max():,}")
-            print(f"   ➔ Moyenne de cas par semaine en 2026    : {df_2026['total_cas_nouveaux'].mean():.0f}")
-        else:
-            print("\n AUCUNE DONNÉE TROUVÉE POUR 2026 DANS LA BASE !")
+       
+        with engine.connect() as conn:
+            result = conn.execute(query)
+            columns = result.keys()
+            rows = result.fetchall()
+            df = pd.DataFrame(rows, columns=columns)
             
+            print("\n" + "="*80)
+            print(" VÉRITÉ BRUTE DE LA BASE DE DONNÉES (PALUDISME)")
+            print("="*80)
+            print(df.to_string(index=False))
+            print("="*80)
+            
+            df_2026 = df[df['annee'] == 2026]
+            if not df_2026.empty:
+                print(f"\n ANALYSE 2026 : {len(df_2026)} semaines trouvées.")
+                print(f"   ➔ Maximum de cas en une semaine en 2026 : {df_2026['total_cas_nouveaux'].max():,}")
+                print(f"   ➔ Moyenne de cas par semaine en 2026    : {df_2026['total_cas_nouveaux'].mean():.0f}")
+            else:
+                print("\n AUCUNE DONNÉE TROUVÉE POUR 2026 DANS LA BASE !")
+                
     except Exception as e:
         print(f"Erreur SQL : {e}")
 
-# ==============================================================================
-# BLOC D'EXÉCUTION PRINCIPAL
-# ==============================================================================
 
 if __name__ == "__main__":
     print("=" * 60)
